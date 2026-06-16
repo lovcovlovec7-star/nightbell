@@ -4,6 +4,9 @@ const SAVE_PATH := "user://nightbell_save.json"
 const INTERACT_DISTANCE := 3.2
 
 var mouse_sensitivity := 0.0025
+var master_volume := 0.75
+var radio_enabled := false
+var radio_mode := 0
 var evidence := {}
 var objective := "Register with Kazuo Sato at security."
 var quest_step := 0
@@ -107,6 +110,28 @@ func _create_floor(floor_num:int, y:float) -> void:
 		_add_box("Ceiling Lamp", Vector3(-17 + i*4,y+2.65, -7), Vector3(2,0.05,0.28), Color(0.65,0.85,0.95), false)
 		var l := OmniLight3D.new(); l.position = Vector3(-17+i*4,y+2.45,-7); l.light_color = Color(0.58,0.76,0.9); l.light_energy = 0.55; l.omni_range = 6; add_child(l)
 	_add_room_labels(floor_num, y)
+	if floor_num == 1:
+		_create_first_floor_detail(y)
+
+
+func _create_first_floor_detail(y:float) -> void:
+	# Dense first-floor office dressing: all major props use collisions so the slice plays like rooms, not an empty box.
+	_add_box("Reception Counter", Vector3(-3.2,y+0.55,-6.7), Vector3(4.8,1.1,0.9), Color(0.32,0.25,0.18), true)
+	_add_box("Security Desk", Vector3(-7.8,y+0.55,-4.2), Vector3(2.8,1.1,1.1), Color(0.22,0.24,0.26), true)
+	_add_box("Waiting Sofa A", Vector3(-5.2,y+0.45,-8.0), Vector3(2.8,0.9,0.75), Color(0.10,0.12,0.16), true)
+	_add_box("Waiting Sofa B", Vector3(-1.2,y+0.45,-8.0), Vector3(2.8,0.9,0.75), Color(0.10,0.12,0.16), true)
+	for x in [-9.5, -8.2, -6.9]:
+		_add_box("Turnstile", Vector3(x,y+0.55,-1.8), Vector3(0.55,1.1,1.7), Color(0.18,0.20,0.22), true)
+	_add_box("Kitchen Counter", Vector3(0.5,y+0.55,7.8), Vector3(5.0,1.1,0.8), Color(0.30,0.29,0.25), true)
+	_add_box("Vending Machine", Vector3(3.7,y+1.0,8.7), Vector3(1.0,2.0,0.7), Color(0.12,0.25,0.32), true)
+	for x in [7.2, 8.6, 10.0]:
+		_add_box("Archive Cabinet", Vector3(x,y+1.0,-7.2), Vector3(1.1,2.0,0.75), Color(0.22,0.23,0.20), true)
+	for x in [13.8, 15.2, 16.6]:
+		_add_box("Server Rack", Vector3(x,y+1.05,7.2), Vector3(0.9,2.1,0.9), Color(0.04,0.05,0.06), true)
+	for x in [-15.5, -12.5, 4.8, 12.4, 17.4]:
+		_add_box("Door With Sign", Vector3(x,y+1.1,-9.25), Vector3(1.15,2.2,0.18), Color(0.20,0.17,0.13), true)
+	for pos in [Vector3(-10,y+0.7,7.4), Vector3(5.5,y+0.7,6.3), Vector3(12.6,y+0.7,-6.4), Vector3(17.8,y+0.7,2.3)]:
+		_add_box("Plant / Trash Detail", pos, Vector3(0.55,1.4,0.55), Color(0.13,0.32,0.18), true)
 
 func _create_desk_cluster(pos:Vector3) -> void:
 	_add_box("Office Desk", pos + Vector3(0,0.45,0), Vector3(2.2,0.12,1.1), Color(0.28,0.22,0.16), true)
@@ -173,7 +198,14 @@ func _resume_game() -> void:
 func _show_pause() -> void:
 	ui_mode = "pause"; Input.mouse_mode = Input.MOUSE_MODE_VISIBLE; overlay.visible = true; overlay.get_children().map(func(c): c.queue_free()); _add_overlay_title("PAUSED"); _add_button("Resume", _resume_game, 160); _add_button("Save", _save, 220); _add_button("Main Menu", _show_menu, 280)
 func _show_options() -> void:
-	ui_mode = "options"; overlay.get_children().map(func(c): c.queue_free()); _add_overlay_title("Options\nVolume handled by generated office ambience. Mouse sensitivity saved."); _add_button("Fullscreen / Windowed", func(): DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN if DisplayServer.window_get_mode()!=DisplayServer.WINDOW_MODE_FULLSCREEN else DisplayServer.WINDOW_MODE_WINDOWED), 180); _add_button("Back", _show_menu, 250)
+	ui_mode = "options"; Input.mouse_mode = Input.MOUSE_MODE_VISIBLE; overlay.visible = true; overlay.get_children().map(func(c): c.queue_free()); _add_overlay_title("Options")
+	_add_button("Fullscreen / Windowed", func(): DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN if DisplayServer.window_get_mode()!=DisplayServer.WINDOW_MODE_FULLSCREEN else DisplayServer.WINDOW_MODE_WINDOWED), 145)
+	_add_button("Mouse sensitivity -", func(): mouse_sensitivity = max(0.0008, mouse_sensitivity - 0.0004); _show_options(), 205)
+	_add_button("Mouse sensitivity +", func(): mouse_sensitivity = min(0.006, mouse_sensitivity + 0.0004); _show_options(), 255)
+	_add_button("Volume -", func(): master_volume = max(0.0, master_volume - 0.1); AudioServer.set_bus_volume_db(0, linear_to_db(max(master_volume, 0.001))); _show_options(), 315)
+	_add_button("Volume +", func(): master_volume = min(1.0, master_volume + 0.1); AudioServer.set_bus_volume_db(0, linear_to_db(max(master_volume, 0.001))); _show_options(), 365)
+	var values := Label.new(); values.text = "Mouse: %.4f    Volume: %d%%" % [mouse_sensitivity, int(master_volume * 100.0)]; values.position = Vector2(250, 430); values.size = Vector2(360, 30); overlay.add_child(values)
+	_add_button("Back", _show_menu, 465)
 
 func _update_prompt() -> void:
 	current_target = null; var best := INTERACT_DISTANCE
@@ -187,15 +219,42 @@ func _update_prompt() -> void:
 
 func _use_target() -> void:
 	if current_target == null: return
-	var t:String = current_target.get_meta("type")
+	var t = str(current_target.get_meta("type"))
 	match t:
-		"npc": _start_dialogue(current_target.name, current_target.get_meta("role"), current_target.get_meta("lines"))
-		"computer": _screen("WORK COMPUTER", "Mail: Welcome to night shift. Task: switch on radio and print Form N-13. Attachment mentions a 2009 elevator bell incident."); _progress(1, "Turn on the radio, then print the shift form.")
-		"radio": _screen("RADIO", "Track 01: fluorescent hum. Track 02: weather in Japanese. Static phrase: 'Do not let HR file you.'"); _progress(2, "Print the shift form at the copier.")
-		"printer": evidence["printed_form"] = true; _screen("PRINTER", "Form N-13 printed. A second page appears: CCTV timestamp 00:13, archive corridor."); _progress(3, "Review CCTV in the security room.")
-		"cctv": evidence["cctv_recording"] = true; _screen("CCTV", "Cameras: Reception, Open-space, 2F Corridor, Archive, Server, Emergency Exit. Camera Archive shows a standee-like employee staring back. Recording saved as evidence."); _progress(4, "Use the elevator to reach floor 2 and question HR/IT.")
+		"npc":
+			_start_dialogue(current_target.name, current_target.get_meta("role"), current_target.get_meta("lines"))
+			if current_target.name == "Kazuo Sato": _progress(1, "Talk to Aya Morita at reception.")
+			elif current_target.name == "Aya Morita" and quest_step >= 1: _progress(2, "Go to open-space and read the work computer email.")
+		"computer":
+			if quest_step < 2:
+				_screen("WORK COMPUTER", "The workstation is locked. Reception needs to activate your temporary pass first.")
+				return
+			_screen("WORK COMPUTER", "Mail: Welcome to night shift. Task: switch on radio and print Form N-13. Attachment mentions a 2009 elevator bell incident."); _progress(3, "Turn on the radio, then print the shift form.")
+		"radio":
+			if quest_step < 3:
+				_screen("RADIO", "Only ordinary office static. You do not know which channel the shift email requested yet.")
+				return
+			radio_enabled = not radio_enabled
+			radio_mode = (radio_mode + 1) % 3
+			var phrase := "Track %d: fluorescent hum." % (radio_mode + 1)
+			if evidence.has("cctv_recording"): phrase += " A voice says: 'The archive copied your face.'"
+			_screen("RADIO", phrase + "\nRadio is now %s." % ("ON" if radio_enabled else "OFF")); _progress(4, "Print the shift form at the copier.")
+		"printer":
+			if quest_step < 4:
+				_screen("PRINTER", "The copier waits for a queued document from the computer/radio workflow.")
+				return
+			evidence["printed_form"] = true; _screen("PRINTER", "Form N-13 printed. A second page appears: CCTV timestamp 00:13, archive corridor."); _progress(5, "Review CCTV in the security room.")
+		"cctv":
+			if quest_step < 5:
+				_screen("CCTV", "The guard asks you not to touch the cameras until your paperwork prints.")
+				return
+			evidence["cctv_recording"] = true; _screen("CCTV", "Cameras: Reception, Open-space, Archive, Server. Archive camera shows a strange figure staring back. Recording saved as evidence."); _progress(6, "Take the old archive folder as evidence.")
 		"elevator": _ride_elevator()
-		"evidence_archive": evidence["archive_folder"] = true; _screen("OLD ARCHIVE", "Folder 2009-NB: employee disappeared during an unscheduled night shift. Bell heard from disconnected elevator.")
+		"evidence_archive":
+			if quest_step < 6:
+				_screen("OLD ARCHIVE", "Rows of folders, but you need a CCTV timestamp before searching safely.")
+				return
+			evidence["archive_folder"] = true; _screen("OLD ARCHIVE", "Folder 2009-NB: employee disappeared during an unscheduled night shift. Bell heard from disconnected elevator."); _progress(7, "Return to Kazuo or Aya with the evidence.")
 		"it_computer": evidence["it_file"] = true; _screen("IT TERMINAL", "Recovered file: access logs were edited by Shift Chief account. Server room contains hidden export.")
 		"exit": _ending()
 		"report": _report()
