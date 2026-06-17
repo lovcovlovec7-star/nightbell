@@ -1,297 +1,463 @@
 extends Node3D
 
-const SAVE_PATH := "user://nightbell_save.json"
-const INTERACT_DISTANCE := 3.2
+const PlayerController = preload("res://scripts/player_controller.gd")
+const QuestManager = preload("res://scripts/quest_manager.gd")
+const DialogueManager = preload("res://scripts/dialogue_manager.gd")
+const DeviceUI = preload("res://scripts/device_ui.gd")
+const Interactable = preload("res://scripts/interactable.gd")
+const RadioLogic = preload("res://scripts/radio.gd")
 
-var mouse_sensitivity := 0.0025
-var master_volume := 0.75
-var radio_enabled := false
-var radio_mode := 0
-var evidence := {}
-var objective := "Register with Kazuo Sato at security."
-var quest_step := 0
-var ui_mode := "menu"
-var current_floor := 1
-var interactables: Array[Node3D] = []
-var current_target: Node3D
-var dialogue_lines: Array[String] = []
-var dialogue_index := 0
-var player: CharacterBody3D
-var camera: Camera3D
-var yaw := 0.0
-var pitch := 0.0
-var hud: CanvasLayer
-var objective_label: Label
-var evidence_label: Label
-var prompt_label: Label
-var panel: Panel
-var speaker_label: Label
-var body_label: Label
-var portrait: ColorRect
-var overlay: Panel
-var rng := RandomNumberGenerator.new()
-
-var npcs := [
-	["Kazuo Sato", "Security Guard", Vector3(-5, 0, -4), Color(0.22, 0.34, 0.42), ["New night staff? Sign here. The bell after midnight is only the elevator settling.", "Take the temporary pass from Aya. Do not force the emergency exit."]],
-	["Aya Morita", "Reception", Vector3(-1.8, 0, -5.2), Color(0.55, 0.31, 0.38), ["Your pass is active for floor one. Smile for the camera; it likes new faces.", "Open-space computer, radio check, print the shift form. Then I can unlock floor two."]],
-	["Mika Hayashi", "HR Manager", Vector3(11, 3.4, -3), Color(0.46, 0.38, 0.56), ["Policy says archived incidents are not incidents once reclassified.", "Collect only approved forms. Unapproved memories create liability."]],
-	["Ren Takahashi", "IT Technician", Vector3(15, 3.4, 4), Color(0.25, 0.48, 0.56), ["Camera four loops, but the timestamps keep breathing.", "If you find my tablet log, copy it before the chief arrives."]],
-	["Mrs. Noguchi", "Cleaner", Vector3(2, 0, 6), Color(0.38, 0.52, 0.35), ["Wet floor, dry throat, closed mouths. The old archive remembers shoes.", "When lights go red, trust paper more than people."]],
-	["Shinji Oda", "Archivist", Vector3(8, 6.8, -4), Color(0.42, 0.36, 0.28), ["The 2009 folder was never destroyed. It was promoted upstairs.", "Seven pieces make a report heavy enough to open the final door."]],
-	["Takeo Inoue", "Accountant", Vector3(11, 3.4, 5.5), Color(0.50, 0.45, 0.31), ["Numbers sleep in pairs. Missing overtime, missing person, balanced column."]],
-	["Yuta Senda", "Intern", Vector3(4, 0, 1), Color(0.28, 0.36, 0.58), ["I heard the radio say my name yesterday. I was not hired yesterday."]],
-	["Night Administrator", "Attached PNG Staff", Vector3(-4, 0, 3), Color(0.60, 0.42, 0.52), ["I know where the old card is, but I forgot why I hid it."]],
-	["Haruto Kume", "HR Man With Folder", Vector3(13, 3.4, -6), Color(0.35, 0.35, 0.42), ["Rule 6: Do not discuss Rule 5 with employees who still cast shadows."]],
-	["Nao Fujii", "IT Staff With Tablet", Vector3(15, 3.4, 1), Color(0.30, 0.55, 0.62), ["Do not rewind camera six unless you want it to notice you."]],
-	["Emi Kurata", "Archive Clerk", Vector3(9, 6.8, 2), Color(0.52, 0.42, 0.34), ["Folders are safer than mouths. Take the one stamped NIGHT BELL."]],
-	["Daichi Mori", "Tired Office Worker", Vector3(1, 0, 4), Color(0.48, 0.43, 0.36), ["Coffee cold. Bell warm. Shift repeats. Coffee cold."]]
+var player
+var camera
+var quest
+var dialogue
+var device_ui
+var radio_logic
+var hud_objective
+var hud_evidence
+var prompt_label
+var pause_panel
+var current_interactable = null
+var furniture_count = 0
+var rooms_count = 11
+var npc_defs = [
+	{"name":"Кадзуо Сато","role":"охранник","file":"kazuo_sato.png","pos":Vector3(-7,0,1),"step":0},
+	{"name":"Ая Морита","role":"ресепшен","file":"aya_morita.png","pos":Vector3(-3,0,1),"step":1},
+	{"name":"Начальник смены","role":"строгий руководитель","file":"boss.png","pos":Vector3(8,0,-3),"step":-1},
+	{"name":"Эми Накамура","role":"HR-сотрудник","file":"hr_worker.png","pos":Vector3(2,0,-9),"step":-1},
+	{"name":"Рё Кобаяси","role":"IT-сотрудник","file":"it_worker.png","pos":Vector3(11,0,-8),"step":-1},
+	{"name":"Синъя Ватанабэ","role":"дежурный инженер","file":"engineer.png","pos":Vector3(11,0,5),"step":-1},
+	{"name":"Юи Танакa","role":"уборка ночной смены","file":"cleaner.png","pos":Vector3(-10,0,-8),"step":-1}
 ]
 
-func _ready() -> void:
-	rng.randomize()
+func _ready():
+	_ensure_input_actions()
 	_build_world()
-	_build_player()
 	_build_ui()
-	_show_menu()
+	quest = QuestManager.new()
+	add_child(quest)
+	quest.objective_changed.connect(func(text): hud_objective.text = "Цель: " + text)
+	quest.evidence_changed.connect(func(count): hud_evidence.text = "Улики: " + str(count))
+	dialogue = DialogueManager.new()
+	add_child(dialogue)
+	dialogue.closed.connect(_unlock_player)
+	device_ui = DeviceUI.new()
+	add_child(device_ui)
+	device_ui.closed.connect(_unlock_player)
+	device_ui.action.connect(_device_action)
+	radio_logic = RadioLogic.new()
+	add_child(radio_logic)
+	quest.ready_state()
+	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
-func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventMouseMotion and ui_mode == "game":
-		yaw -= event.relative.x * mouse_sensitivity
-		pitch = clamp(pitch - event.relative.y * mouse_sensitivity, -1.35, 1.35)
-		player.rotation.y = yaw
-		camera.rotation.x = pitch
-	if event.is_action_pressed("interact") and ui_mode == "game":
-		_use_target()
-	if event.is_action_pressed("next_line") and ui_mode == "dialogue":
-		_advance_dialogue()
-	if event.is_action_pressed("ui_cancel"):
-		if ui_mode == "game": _show_pause()
-		elif ui_mode in ["pause", "computer", "cctv", "document", "report", "options"]: _resume_game()
+func _build_world():
+	var world = WorldEnvironment.new()
+	var env = Environment.new()
+	env.background_mode = Environment.BG_COLOR
+	env.background_color = Color(0.01, 0.012, 0.018)
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_color = Color(0.08, 0.10, 0.13)
+	world.environment = env
+	add_child(world)
+	_add_box("Floor", Vector3(0,-0.06,-3), Vector3(28,0.12,24), Color(0.08,0.085,0.09), true)
+	_make_rooms()
+	_make_player()
+	_make_npcs()
+	_make_devices()
+	_make_lights()
 
-func _physics_process(delta: float) -> void:
-	if ui_mode != "game": return
-	var input_dir := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
-	var basis := player.global_transform.basis
-	var dir := (basis.x * input_dir.x + basis.z * input_dir.y).normalized()
-	var speed := 5.0 if Input.is_action_pressed("sprint") else 3.0
-	player.velocity.x = dir.x * speed
-	player.velocity.z = dir.z * speed
-	player.velocity.y -= 18.0 * delta
-	player.move_and_slide()
-	_update_prompt()
+func _make_player():
+	player = CharacterBody3D.new()
+	player.name = "Player"
+	player.set_script(PlayerController)
+	player.position = Vector3(-7, 0.1, 5)
+	add_child(player)
+	var shape = CollisionShape3D.new()
+	var capsule = CapsuleShape3D.new()
+	capsule.height = 1.7
+	capsule.radius = 0.32
+	shape.shape = capsule
+	shape.position.y = 0.85
+	player.add_child(shape)
+	camera = Camera3D.new()
+	camera.name = "Camera3D"
+	camera.position.y = 1.65
+	camera.current = true
+	player.add_child(camera)
 
-func _build_world() -> void:
-	var env := WorldEnvironment.new(); add_child(env)
-	var e := Environment.new(); e.background_mode = Environment.BG_COLOR; e.background_color = Color(0.015,0.018,0.022); e.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR; e.ambient_light_color = Color(0.08,0.1,0.13); env.environment = e
-	var sun := DirectionalLight3D.new(); sun.light_energy = 0.15; add_child(sun)
-	for f in range(3):
-		_create_floor(f + 1, f * 3.4)
-	for data in npcs: _create_npc(data)
-	_create_interactable("Work Computer", "computer", Vector3(4,0, -2), "E — use: Work Computer")
-	_create_interactable("Radio", "radio", Vector3(2.7,0,-1.7), "E — tune: Office Radio")
-	_create_interactable("Printer/Copier", "printer", Vector3(6,0,-2.4), "E — print: Shift Form")
-	_create_interactable("CCTV Console", "cctv", Vector3(-6,0,-1), "E — inspect: CCTV Console")
-	_create_interactable("Elevator", "elevator", Vector3(-8,0,5), "E — ride: Elevator")
-	_create_interactable("Emergency Exit", "exit", Vector3(18,0,6), "E — open: Emergency Exit")
-	_create_interactable("Old Archive Folder", "evidence_archive", Vector3(8,6.8,-2), "E — collect: Archive Folder")
-	_create_interactable("IT Terminal", "it_computer", Vector3(14,3.4,3), "E — use: IT Computer")
-	_create_interactable("Final Report Desk", "report", Vector3(17,6.8,4), "E — assemble: Final Report")
+func _make_rooms():
+	var rooms = [
+		["РЕСЕПШЕН", Vector3(-4,0,3), Vector3(8,0.12,5), Color(0.11,0.10,0.09)],
+		["ОХРАНА", Vector3(-10,0,3), Vector3(4,0.12,5), Color(0.07,0.09,0.11)],
+		["ОЖИДАНИЕ", Vector3(3,0,3), Vector3(5,0.12,5), Color(0.09,0.08,0.10)],
+		["OPEN SPACE", Vector3(5,0,-4), Vector3(12,0.12,7), Color(0.08,0.09,0.10)],
+		["АРХИВ", Vector3(-8,0,-7), Vector3(6,0.12,5), Color(0.12,0.095,0.07)],
+		["СЕРВЕРНАЯ", Vector3(10,0,-9), Vector3(6,0.12,5), Color(0.06,0.09,0.12)],
+		["КУХНЯ", Vector3(-1,0,-9), Vector3(5,0.12,5), Color(0.08,0.11,0.08)],
+		["ТУАЛЕТ", Vector3(-12,0,-2), Vector3(4,0.12,4), Color(0.09,0.10,0.11)],
+		["CCTV", Vector3(-12,0,7), Vector3(4,0.12,3), Color(0.06,0.08,0.10)],
+		["КОРИДОР", Vector3(0,0,0), Vector3(24,0.10,2), Color(0.07,0.07,0.075)],
+		["ЛИФТ / ЛЕСТНИЦА", Vector3(12,0,3), Vector3(4,0.12,4), Color(0.075,0.075,0.08)]
+	]
+	for room in rooms:
+		_add_room(str(room[0]), room[1], room[2], room[3])
+	_populate_furniture()
 
-func _create_floor(floor_num:int, y:float) -> void:
-	_add_box("Floor %d slab" % floor_num, Vector3(0,y-0.05,0), Vector3(42,0.1,20), Color(0.12,0.13,0.14), true)
-	_add_box("Floor %d ceiling" % floor_num, Vector3(0,y+2.8,0), Vector3(42,0.08,20), Color(0.05,0.055,0.06), false)
-	for x in [-20,20]: _add_box("Wall", Vector3(x,y+1.4,0), Vector3(0.25,2.8,20), Color(0.18,0.19,0.20), true)
-	for z in [-10,10]: _add_box("Wall", Vector3(0,y+1.4,z), Vector3(42,2.8,0.25), Color(0.16,0.17,0.18), true)
-	for x in [-13,-6,2,9,16]: _add_box("Glass/partition", Vector3(x,y+1.15,0), Vector3(0.08,2.3,13), Color(0.20,0.28,0.32,0.55), true)
-	for i in range(12):
-		var px := -16 + (i % 6) * 6.0; var pz := -6 + int(i / 6) * 8.0
-		_create_desk_cluster(Vector3(px,y,pz))
+func _add_room(label, pos, size, color):
+	_add_box(label + " floor", pos + Vector3(0,0.01,0), size, color, false)
+	_add_box(label + " north wall", pos + Vector3(0,1.2,-size.z/2), Vector3(size.x,2.4,0.12), Color(0.13,0.14,0.15), true)
+	_add_box(label + " south wall", pos + Vector3(0,1.2,size.z/2), Vector3(size.x,2.4,0.12), Color(0.13,0.14,0.15), true)
+	_add_box(label + " west wall", pos + Vector3(-size.x/2,1.2,0), Vector3(0.12,2.4,size.z), Color(0.12,0.13,0.14), true)
+	_add_box(label + " east wall", pos + Vector3(size.x/2,1.2,0), Vector3(0.12,2.4,size.z), Color(0.12,0.13,0.14), true)
+	_add_box("Табличка " + label, pos + Vector3(-size.x/2 + 0.08,1.6,0), Vector3(0.04,0.35,1.2), Color(0.85,0.82,0.62), false)
+	_add_label_3d(label, pos + Vector3(-size.x/2 + 0.12,1.75,0), 0.28)
+
+func _populate_furniture():
+	for x in [-1, 2, 5, 8]:
+		for z in [-5, -3]:
+			_add_desk(Vector3(x,0,z))
+	for x in [-9,-7,-5]:
+		for z in [-8,-6]:
+			_add_shelf(Vector3(x,0,z))
+	for x in [-4,-2,2,4,6,8,10,-10,-12]:
+		_add_chair(Vector3(x,0,4.5))
+	_add_counter(Vector3(-4,0,1.0), "стойка ресепшена")
+	_add_counter(Vector3(-9.5,0,1.0), "стойка охраны")
+	for i in range(18):
+		_add_box("Папка " + str(i), Vector3(-9 + (i % 6) * 0.8, 0.55, -7.8 + int(i / 6) * 0.9), Vector3(0.42,0.12,0.28), Color(0.18 + 0.03 * (i % 3),0.12,0.07), false)
 	for i in range(10):
-		_add_box("Ceiling Lamp", Vector3(-17 + i*4,y+2.65, -7), Vector3(2,0.05,0.28), Color(0.65,0.85,0.95), false)
-		var l := OmniLight3D.new(); l.position = Vector3(-17+i*4,y+2.45,-7); l.light_color = Color(0.58,0.76,0.9); l.light_energy = 0.55; l.omni_range = 6; add_child(l)
-	_add_room_labels(floor_num, y)
-	if floor_num == 1:
-		_create_first_floor_detail(y)
+		_add_box("Растение/мусорка/лампа " + str(i), Vector3(-12 + i * 2.4,0.4,6.8), Vector3(0.28,0.8,0.28), Color(0.08,0.25,0.12), true)
+	for x in [9.2,10.5,11.8]:
+		_add_box("Серверная стойка", Vector3(x,1,-9), Vector3(0.7,2.0,1.4), Color(0.02,0.025,0.03), true)
+		_add_box("Индикаторы серверов", Vector3(x,1.1,-8.25), Vector3(0.55,1.4,0.02), Color(0.0,0.5,0.8), false)
 
+func _make_npcs():
+	for def in npc_defs:
+		var root = Node3D.new()
+		root.name = def.name
+		root.position = def.pos
+		add_child(root)
+		var plane = MeshInstance3D.new()
+		var mesh = PlaneMesh.new()
+		mesh.size = Vector2(1.25, 2.25)
+		plane.mesh = mesh
+		plane.position.y = 1.13
+		plane.rotation_degrees.y = 180
+		var mat = StandardMaterial3D.new()
+		var npc_texture_path = "res://assets/npc_png/" + def.file
+		if ResourceLoader.exists(npc_texture_path):
+			mat.albedo_texture = load(npc_texture_path)
+			mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		else:
+			mat.albedo_color = Color(0.035, 0.04, 0.055, 1.0)
+			mat.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
+		mat.billboard_mode = BaseMaterial3D.BILLBOARD_FIXED_Y
+		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		plane.material_override = mat
+		root.add_child(plane)
+		_add_box(def.name + " подставка", def.pos + Vector3(0,0.03,0), Vector3(1.1,0.06,0.45), Color(0.02,0.02,0.025), true)
+		var area = Area3D.new()
+		area.set_script(Interactable)
+		area.setup("E — поговорить: " + def.name + ", " + def.role, "npc", def.name)
+		var shape = CollisionShape3D.new()
+		var box = BoxShape3D.new()
+		box.size = Vector3(1.2,2.2,0.6)
+		shape.shape = box
+		shape.position.y = 1.1
+		area.add_child(shape)
+		root.add_child(area)
+		var body = StaticBody3D.new()
+		var c = CollisionShape3D.new()
+		var b = BoxShape3D.new()
+		b.size = Vector3(0.9,1.9,0.35)
+		c.shape = b
+		c.position.y = 0.95
+		body.add_child(c)
+		root.add_child(body)
+		_add_label_3d(def.name + "\n" + def.role, def.pos + Vector3(0,2.35,0), 0.16)
 
-func _create_first_floor_detail(y:float) -> void:
-	# Dense first-floor office dressing: all major props use collisions so the slice plays like rooms, not an empty box.
-	_add_box("Reception Counter", Vector3(-3.2,y+0.55,-6.7), Vector3(4.8,1.1,0.9), Color(0.32,0.25,0.18), true)
-	_add_box("Security Desk", Vector3(-7.8,y+0.55,-4.2), Vector3(2.8,1.1,1.1), Color(0.22,0.24,0.26), true)
-	_add_box("Waiting Sofa A", Vector3(-5.2,y+0.45,-8.0), Vector3(2.8,0.9,0.75), Color(0.10,0.12,0.16), true)
-	_add_box("Waiting Sofa B", Vector3(-1.2,y+0.45,-8.0), Vector3(2.8,0.9,0.75), Color(0.10,0.12,0.16), true)
-	for x in [-9.5, -8.2, -6.9]:
-		_add_box("Turnstile", Vector3(x,y+0.55,-1.8), Vector3(0.55,1.1,1.7), Color(0.18,0.20,0.22), true)
-	_add_box("Kitchen Counter", Vector3(0.5,y+0.55,7.8), Vector3(5.0,1.1,0.8), Color(0.30,0.29,0.25), true)
-	_add_box("Vending Machine", Vector3(3.7,y+1.0,8.7), Vector3(1.0,2.0,0.7), Color(0.12,0.25,0.32), true)
-	for x in [7.2, 8.6, 10.0]:
-		_add_box("Archive Cabinet", Vector3(x,y+1.0,-7.2), Vector3(1.1,2.0,0.75), Color(0.22,0.23,0.20), true)
-	for x in [13.8, 15.2, 16.6]:
-		_add_box("Server Rack", Vector3(x,y+1.05,7.2), Vector3(0.9,2.1,0.9), Color(0.04,0.05,0.06), true)
-	for x in [-15.5, -12.5, 4.8, 12.4, 17.4]:
-		_add_box("Door With Sign", Vector3(x,y+1.1,-9.25), Vector3(1.15,2.2,0.18), Color(0.20,0.17,0.13), true)
-	for pos in [Vector3(-10,y+0.7,7.4), Vector3(5.5,y+0.7,6.3), Vector3(12.6,y+0.7,-6.4), Vector3(17.8,y+0.7,2.3)]:
-		_add_box("Plant / Trash Detail", pos, Vector3(0.55,1.4,0.55), Color(0.13,0.32,0.18), true)
+func _make_devices():
+	_add_device("Компьютер NightBell", Vector3(4,0.95,-3), Vector3(0.8,0.55,0.12), Color(0.05,0.25,0.42), "computer", "E — открыть компьютер")
+	_add_device("Принтер", Vector3(8,0.65,-1.4), Vector3(1.0,0.45,0.65), Color(0.18,0.18,0.20), "printer", "E — печать документа")
+	_add_device("CCTV монитор", Vector3(-12,1.05,6.9), Vector3(1.2,0.7,0.1), Color(0.03,0.38,0.25), "cctv", "E — смотреть CCTV")
+	_add_device("Радио", Vector3(-9.4,0.85,1.1), Vector3(0.65,0.38,0.35), Color(0.12,0.10,0.07), "radio", "E — включить/переключить радио")
+	_add_device("Архивная улика", Vector3(-7.5,0.8,-6.0), Vector3(0.55,0.08,0.38), Color(0.9,0.82,0.55), "archive", "E — взять улику из архива")
 
-func _create_desk_cluster(pos:Vector3) -> void:
-	_add_box("Office Desk", pos + Vector3(0,0.45,0), Vector3(2.2,0.12,1.1), Color(0.28,0.22,0.16), true)
-	_add_box("Monitor", pos + Vector3(0,0.95,-0.35), Vector3(0.8,0.45,0.06), Color(0.02,0.05,0.07), true)
-	_add_box("Keyboard", pos + Vector3(0,0.56,0.15), Vector3(0.75,0.04,0.22), Color(0.04,0.04,0.045), true)
-	_add_box("Chair", pos + Vector3(0,0.45,0.95), Vector3(0.65,0.8,0.55), Color(0.08,0.09,0.10), true)
-	_add_box("Papers", pos + Vector3(0.55,0.54,0.05), Vector3(0.45,0.02,0.32), Color(0.82,0.80,0.70), false)
+func _add_device(name, pos, size, color, kind, label):
+	_add_box(name, pos, size, color, true)
+	var area = Area3D.new()
+	area.set_script(Interactable)
+	area.setup(label, kind, name)
+	area.position = pos
+	var shape = CollisionShape3D.new()
+	var box = BoxShape3D.new()
+	box.size = size + Vector3(1.0,1.0,1.0)
+	shape.shape = box
+	area.add_child(shape)
+	add_child(area)
 
-func _add_room_labels(f:int, y:float) -> void:
-	var names := ["Reception / Security", "Open Space", "Archive", "Server", "Kitchen", "CCTV", "HR", "Accounting", "IT", "Legal", "Old Files", "Final Room"]
-	for i in range(4):
-		_add_box(names[(f-1)*4+i], Vector3(-15+i*10,y+1.7,-9.8), Vector3(3.8,0.35,0.04), Color(0.7,0.68,0.55), false)
+func _make_lights():
+	var sun = DirectionalLight3D.new()
+	sun.light_energy = 0.35
+	sun.rotation_degrees = Vector3(-65,20,0)
+	add_child(sun)
+	for pos in [Vector3(-8,2.5,3),Vector3(-2,2.5,3),Vector3(5,2.5,-4),Vector3(-8,2.5,-7),Vector3(10,2.5,-9),Vector3(-1,2.5,-9),Vector3(-12,2.5,7)]:
+		var light = OmniLight3D.new()
+		light.position = pos
+		light.light_color = Color(0.65,0.75,0.95)
+		light.light_energy = 1.1
+		light.omni_range = 7.0
+		add_child(light)
 
-func _add_box(n:String, pos:Vector3, size:Vector3, color:Color, collision:bool) -> Node3D:
-	var body: Node3D = StaticBody3D.new() if collision else Node3D.new(); body.name = n; body.position = pos; add_child(body)
-	var mesh := MeshInstance3D.new(); var box := BoxMesh.new(); box.size = size; mesh.mesh = box
-	var mat := StandardMaterial3D.new(); mat.albedo_color = color; mat.emission_enabled = color.r > 0.6; mat.emission = color; mat.emission_energy_multiplier = 0.35; mesh.material_override = mat; body.add_child(mesh)
-	if collision:
-		var col := CollisionShape3D.new(); var shape := BoxShape3D.new(); shape.size = size; col.shape = shape; body.add_child(col)
-	return body
+func _build_ui():
+	var hud = CanvasLayer.new()
+	add_child(hud)
+	hud_objective = Label.new()
+	hud_objective.position = Vector2(20,20)
+	hud_objective.add_theme_font_size_override("font_size", 20)
+	hud.add_child(hud_objective)
+	hud_evidence = Label.new()
+	hud_evidence.position = Vector2(20,50)
+	hud_evidence.add_theme_font_size_override("font_size", 20)
+	hud.add_child(hud_evidence)
+	prompt_label = Label.new()
+	prompt_label.anchor_left = 0.35
+	prompt_label.anchor_top = 0.58
+	prompt_label.anchor_right = 0.75
+	prompt_label.anchor_bottom = 0.66
+	prompt_label.add_theme_font_size_override("font_size", 22)
+	hud.add_child(prompt_label)
+	pause_panel = PanelContainer.new()
+	pause_panel.anchor_left = 0.35
+	pause_panel.anchor_top = 0.25
+	pause_panel.anchor_right = 0.65
+	pause_panel.anchor_bottom = 0.65
+	pause_panel.visible = false
+	hud.add_child(pause_panel)
+	var col = VBoxContainer.new()
+	pause_panel.add_child(col)
+	var title = Label.new()
+	title.text = "Пауза"
+	title.add_theme_font_size_override("font_size", 34)
+	col.add_child(title)
+	var pause_buttons = [["Resume", "_resume"], ["Options: E/Enter/Esc/WASD", "_noop"], ["Quit to menu", "_quit_to_menu"]]
+	for pair in pause_buttons:
+		var button = Button.new()
+		button.text = pair[0]
+		button.pressed.connect(Callable(self, pair[1]))
+		col.add_child(button)
 
-func _create_npc(data:Array) -> void:
-	var npc := _add_box(data[0], data[2] + Vector3(0,0.9,0), Vector3(0.85,1.8,0.08), data[3], true)
-	npc.set_meta("type", "npc"); npc.set_meta("display", "E — talk: %s, %s" % [data[0], data[1]]); npc.set_meta("lines", data[4]); npc.set_meta("role", data[1]); interactables.append(npc)
-	_add_box("Shadow " + data[0], data[2] + Vector3(0,0.02,0.08), Vector3(0.9,0.02,0.35), Color(0,0,0,0.7), false)
+func _process(delta):
+	_update_interaction_prompt()
 
-func _create_interactable(n:String, t:String, pos:Vector3, display:String) -> void:
-	var node := _add_box(n, pos + Vector3(0,0.55,0), Vector3(1.0,1.1,0.8), Color(0.24,0.30,0.32), true)
-	node.set_meta("type", t); node.set_meta("display", display); interactables.append(node)
+func _unhandled_input(event):
+	if Input.is_action_just_pressed("pause"):
+		if device_ui and device_ui.active:
+			device_ui.close()
+		else:
+			_toggle_pause()
+	if Input.is_action_just_pressed("dialogue_next") and dialogue and dialogue.active:
+		dialogue.next()
+	if Input.is_action_just_pressed("interact") and current_interactable and not dialogue.active and not device_ui.active and not get_tree().paused:
+		_handle_interaction(current_interactable)
 
-func _build_player() -> void:
-	player = CharacterBody3D.new(); player.name = "Player"; player.position = Vector3(-7,0.2,-7); add_child(player)
-	var col := CollisionShape3D.new(); var capsule := CapsuleShape3D.new(); capsule.height = 1.7; capsule.radius = 0.32; col.shape = capsule; player.add_child(col)
-	camera = Camera3D.new(); camera.position = Vector3(0,1.55,0); player.add_child(camera)
-
-func _build_ui() -> void:
-	hud = CanvasLayer.new(); add_child(hud)
-	objective_label = Label.new(); objective_label.position = Vector2(24,18); hud.add_child(objective_label)
-	evidence_label = Label.new(); evidence_label.position = Vector2(24,44); hud.add_child(evidence_label)
-	prompt_label = Label.new(); prompt_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; prompt_label.position = Vector2(360,430); prompt_label.size = Vector2(560,40); hud.add_child(prompt_label)
-	panel = Panel.new(); panel.visible = false; panel.position = Vector2(80,500); panel.size = Vector2(1120,190); hud.add_child(panel)
-	portrait = ColorRect.new(); portrait.position = Vector2(20,20); portrait.size = Vector2(110,140); panel.add_child(portrait)
-	speaker_label = Label.new(); speaker_label.position = Vector2(150,18); panel.add_child(speaker_label)
-	body_label = Label.new(); body_label.position = Vector2(150,55); body_label.size = Vector2(920,110); body_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART; panel.add_child(body_label)
-	overlay = Panel.new(); overlay.visible = false; overlay.position = Vector2(220,100); overlay.size = Vector2(840,520); hud.add_child(overlay)
-
-func _show_menu() -> void:
-	ui_mode = "menu"; Input.mouse_mode = Input.MOUSE_MODE_VISIBLE; overlay.visible = true; overlay.get_children().map(func(c): c.queue_free())
-	_add_overlay_title("NIGHT BELL: OFFICE SHIFT\nナイトベル・オフィスシフト")
-	_add_button("New Game", _new_game, 120); _add_button("Continue", _continue_game, 180); _add_button("Options", _show_options, 240); _add_button("Exit", func(): get_tree().quit(), 300)
-
-func _add_overlay_title(text:String) -> void:
-	var l := Label.new(); l.text = text; l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; l.position = Vector2(40,35); l.size = Vector2(760,80); overlay.add_child(l)
-
-func _add_button(text:String, call:Callable, y:int) -> void:
-	var b := Button.new(); b.text = text; b.position = Vector2(300,y); b.size = Vector2(240,44); b.pressed.connect(call); overlay.add_child(b)
-
-func _new_game() -> void:
-	evidence.clear(); quest_step = 0; objective = "Register with Kazuo Sato at security."; _save(); _resume_game()
-func _continue_game() -> void:
-	_load(); _resume_game()
-func _resume_game() -> void:
-	ui_mode = "game"; overlay.visible = false; panel.visible = false; Input.mouse_mode = Input.MOUSE_MODE_CAPTURED; _refresh_hud()
-func _show_pause() -> void:
-	ui_mode = "pause"; Input.mouse_mode = Input.MOUSE_MODE_VISIBLE; overlay.visible = true; overlay.get_children().map(func(c): c.queue_free()); _add_overlay_title("PAUSED"); _add_button("Resume", _resume_game, 160); _add_button("Save", _save, 220); _add_button("Main Menu", _show_menu, 280)
-func _show_options() -> void:
-	ui_mode = "options"; Input.mouse_mode = Input.MOUSE_MODE_VISIBLE; overlay.visible = true; overlay.get_children().map(func(c): c.queue_free()); _add_overlay_title("Options")
-	_add_button("Fullscreen / Windowed", func(): DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN if DisplayServer.window_get_mode()!=DisplayServer.WINDOW_MODE_FULLSCREEN else DisplayServer.WINDOW_MODE_WINDOWED), 145)
-	_add_button("Mouse sensitivity -", func(): mouse_sensitivity = max(0.0008, mouse_sensitivity - 0.0004); _show_options(), 205)
-	_add_button("Mouse sensitivity +", func(): mouse_sensitivity = min(0.006, mouse_sensitivity + 0.0004); _show_options(), 255)
-	_add_button("Volume -", func(): master_volume = max(0.0, master_volume - 0.1); AudioServer.set_bus_volume_db(0, linear_to_db(max(master_volume, 0.001))); _show_options(), 315)
-	_add_button("Volume +", func(): master_volume = min(1.0, master_volume + 0.1); AudioServer.set_bus_volume_db(0, linear_to_db(max(master_volume, 0.001))); _show_options(), 365)
-	var values := Label.new(); values.text = "Mouse: %.4f    Volume: %d%%" % [mouse_sensitivity, int(master_volume * 100.0)]; values.position = Vector2(250, 430); values.size = Vector2(360, 30); overlay.add_child(values)
-	_add_button("Back", _show_menu, 465)
-
-func _update_prompt() -> void:
-	current_target = null; var best := INTERACT_DISTANCE
-	for i in interactables:
-		var d := camera.global_position.distance_to(i.global_position)
-		var forward := -camera.global_transform.basis.z
-		if d < best and forward.dot((i.global_position - camera.global_position).normalized()) > 0.65:
-			best = d; current_target = i
-	prompt_label.text = current_target.get_meta("display", "") if current_target else ""
-	_refresh_hud()
-
-func _use_target() -> void:
-	if current_target == null: return
-	var t = str(current_target.get_meta("type"))
-	match t:
-		"npc":
-			_start_dialogue(current_target.name, current_target.get_meta("role"), current_target.get_meta("lines"))
-			if current_target.name == "Kazuo Sato": _progress(1, "Talk to Aya Morita at reception.")
-			elif current_target.name == "Aya Morita" and quest_step >= 1: _progress(2, "Go to open-space and read the work computer email.")
-		"computer":
-			if quest_step < 2:
-				_screen("WORK COMPUTER", "The workstation is locked. Reception needs to activate your temporary pass first.")
-				return
-			_screen("WORK COMPUTER", "Mail: Welcome to night shift. Task: switch on radio and print Form N-13. Attachment mentions a 2009 elevator bell incident."); _progress(3, "Turn on the radio, then print the shift form.")
-		"radio":
-			if quest_step < 3:
-				_screen("RADIO", "Only ordinary office static. You do not know which channel the shift email requested yet.")
-				return
-			radio_enabled = not radio_enabled
-			radio_mode = (radio_mode + 1) % 3
-			var phrase := "Track %d: fluorescent hum." % (radio_mode + 1)
-			if evidence.has("cctv_recording"): phrase += " A voice says: 'The archive copied your face.'"
-			_screen("RADIO", phrase + "\nRadio is now %s." % ("ON" if radio_enabled else "OFF")); _progress(4, "Print the shift form at the copier.")
-		"printer":
-			if quest_step < 4:
-				_screen("PRINTER", "The copier waits for a queued document from the computer/radio workflow.")
-				return
-			evidence["printed_form"] = true; _screen("PRINTER", "Form N-13 printed. A second page appears: CCTV timestamp 00:13, archive corridor."); _progress(5, "Review CCTV in the security room.")
-		"cctv":
-			if quest_step < 5:
-				_screen("CCTV", "The guard asks you not to touch the cameras until your paperwork prints.")
-				return
-			evidence["cctv_recording"] = true; _screen("CCTV", "Cameras: Reception, Open-space, Archive, Server. Archive camera shows a strange figure staring back. Recording saved as evidence."); _progress(6, "Take the old archive folder as evidence.")
-		"elevator": _ride_elevator()
-		"evidence_archive":
-			if quest_step < 6:
-				_screen("OLD ARCHIVE", "Rows of folders, but you need a CCTV timestamp before searching safely.")
-				return
-			evidence["archive_folder"] = true; _screen("OLD ARCHIVE", "Folder 2009-NB: employee disappeared during an unscheduled night shift. Bell heard from disconnected elevator."); _progress(7, "Return to Kazuo or Aya with the evidence.")
-		"it_computer": evidence["it_file"] = true; _screen("IT TERMINAL", "Recovered file: access logs were edited by Shift Chief account. Server room contains hidden export.")
-		"exit": _ending()
-		"report": _report()
-
-func _start_dialogue(n:String, role:String, lines:Array) -> void:
-	ui_mode = "dialogue"; panel.visible = true; dialogue_lines = lines; dialogue_index = 0; speaker_label.text = "%s — %s" % [n, role]; portrait.color = Color(randf(), randf(), randf(), 1); body_label.text = dialogue_lines[0]
-func _advance_dialogue() -> void:
-	dialogue_index += 1
-	if dialogue_index >= dialogue_lines.size(): _resume_game()
-	else: body_label.text = dialogue_lines[dialogue_index]
-
-func _screen(title:String, text:String) -> void:
-	ui_mode = "computer"; Input.mouse_mode = Input.MOUSE_MODE_VISIBLE; overlay.visible = true; overlay.get_children().map(func(c): c.queue_free()); _add_overlay_title(title); var l:=Label.new(); l.text=text + "\n\nEsc — close"; l.position=Vector2(55,140); l.size=Vector2(730,260); l.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART; overlay.add_child(l)
-func _progress(step:int, obj:String) -> void:
-	if quest_step < step: quest_step = step; objective = obj; _save()
-func _ride_elevator() -> void:
-	current_floor = current_floor % 3 + 1; player.position = Vector3(-8, (current_floor-1)*3.4 + 0.2, 5); _progress(4, "Collect archive, HR, IT and hidden evidence; assemble final report on floor 3.")
-func _report() -> void:
-	evidence["final_report"] = true; _screen("FINAL REPORT", "Evidence attached: %d/7. Trust paper, CCTV, and IT logs. Emergency exit authorization generated." % evidence.size()); objective = "Leave through the emergency exit or keep searching for all seven clues."; _save()
-func _ending() -> void:
-	var ending := "BAD END: You leave with gaps. The office files you as night staff."
-	if evidence.size() >= 4: ending = "NEUTRAL END: You escape with partial proof. The company opens Monday."
-	if evidence.has("final_report") and evidence.size() >= 5: ending = "SECRET GOOD END: Your complete report exposes the Night Bell cover-up. Dawn reaches the office."
-	_screen("ENDING", ending)
-func _refresh_hud() -> void:
-	objective_label.text = "Objective: " + objective; evidence_label.text = "Evidence: %d / 7" % evidence.size()
-func _save() -> void:
-	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
-	if f:
-		f.store_string(JSON.stringify({"quest_step":quest_step,"objective":objective,"evidence":evidence,"floor":current_floor}))
-
-func _load() -> void:
-	if not FileAccess.file_exists(SAVE_PATH):
+func _update_interaction_prompt():
+	if not camera or (dialogue and dialogue.active) or (device_ui and device_ui.active):
+		prompt_label.text = ""
 		return
-	var data = JSON.parse_string(FileAccess.get_file_as_string(SAVE_PATH))
-	if typeof(data) == TYPE_DICTIONARY:
-		quest_step = int(data.get("quest_step",0))
-		objective = str(data.get("objective",objective))
-		evidence = data.get("evidence",{})
-		current_floor = int(data.get("floor",1))
+	var space = get_world_3d().direct_space_state
+	var query = PhysicsRayQueryParameters3D.create(camera.global_position, camera.global_position + -camera.global_transform.basis.z * 3.0)
+	query.collide_with_areas = true
+	query.collide_with_bodies = false
+	var hit = space.intersect_ray(query)
+	current_interactable = null
+	if hit.has("collider") and hit.collider is Interactable:
+		current_interactable = hit.collider
+		prompt_label.text = current_interactable.label
+	else:
+		prompt_label.text = ""
+
+func _handle_interaction(area):
+	if area.kind == "npc":
+		_talk(area.payload)
+	elif area.kind == "computer":
+		_open_computer()
+	elif area.kind == "printer":
+		_use_printer()
+	elif area.kind == "cctv":
+		_open_cctv()
+	elif area.kind == "radio":
+		_use_radio()
+	elif area.kind == "archive":
+		_use_archive(area)
+
+func _talk(npc_name):
+	_lock_player()
+	var def = _find_npc(npc_name)
+	var lines = ["Сейчас не время для пустых разговоров. Следуйте текущей цели: " + quest.current_objective()]
+	if npc_name == "Кадзуо Сато" and quest.step == 0:
+		lines = ["Вы новый на ночной смене? Не отходите от маршрута.", "Сначала отметьтесь у Аи на ресепшене. Если услышите колокол — не отвечайте вслух."]
+		quest.advance(0, 0)
+	elif npc_name == "Ая Морита" and quest.step == 1:
+		lines = ["Журнал посетителей пропал после 23:40.", "Проверьте open-space: последнее письмо пришло с компьютера без пользователя."]
+		quest.advance(1, 0)
+	elif (npc_name == "Кадзуо Сато" or npc_name == "Ая Морита") and quest.step == 8:
+		lines = ["Документ, запись CCTV и архивная карточка совпадают.", "Звонок Night Bell шёл изнутри серверной. Смена закончена, но здание ещё нет."]
+		quest.advance(8, 0)
+	dialogue.start_dialogue(def.name, def.role, lines, _npc_portrait_path(def))
+
+func _npc_portrait_path(def):
+	var npc_texture_path = "res://assets/npc_png/" + def.file
+	if ResourceLoader.exists(npc_texture_path):
+		return npc_texture_path
+	return ""
+
+func _find_npc(npc_name):
+	for def in npc_defs:
+		if def.name == npc_name:
+			return def
+	return npc_defs[0]
+
+func _open_computer():
+	_lock_player()
+	if quest.step == 2:
+		quest.advance(2, 0)
+	device_ui.open_device("Компьютер open-space", "Почта: NIGHT BELL / вложение: schedule_anomaly.txt\nФайлы: журнал пропусков, карта архива.", ["read_mail","close"])
+
+func _device_action(action_name):
+	if action_name == "read_mail":
+		quest.advance(3, 1)
+		device_ui.open_device("Письмо прочитано", "Тема: NIGHT BELL. 'Распечатай сменный приказ, включи радио и проверь камеру архива'.", ["close"])
+	elif action_name == "print":
+		quest.advance(5, 1)
+		device_ui.open_device("Принтер", "Документ напечатан. На полях проступает время 00:13.", ["close"])
+	elif action_name.begins_with("camera"):
+		quest.advance(6, 1)
+		var body = "Камера показывает пустой участок."
+		if action_name == "camera_archive" and quest.step >= 6:
+			body = "Камера архива: возле шкафа стоит тёмная фигура. Запись сохранена как улика."
+		device_ui.open_device("CCTV / " + action_name, body, ["camera_reception","camera_open_space","camera_archive","camera_server","close"])
+
+func _use_printer():
+	_lock_player()
+	if quest.step < 5:
+		device_ui.open_device("Принтер", "Нет задания печати. Сначала прочитайте письмо и включите радио.", ["close"])
+	else:
+		device_ui.open_device("Принтер", "Готов к печати сменного приказа.", ["print","close"])
+
+func _open_cctv():
+	_lock_player()
+	device_ui.open_device("CCTV комната", "Камеры: ресепшен, open-space, архив, серверная. После письма архивная камера ловит странную фигуру.", ["camera_reception","camera_open_space","camera_archive","camera_server","close"])
+
+func _use_radio():
+	_lock_player()
+	var text = radio_logic.toggle(quest.step)
+	if quest.step == 4:
+		quest.advance(4, 0)
+	dialogue.start_dialogue("Радио", "объект", [text], "")
+
+func _use_archive(area):
+	_lock_player()
+	var lines = ["Архивный шкаф закрыт процедурой. Нужны письмо, печать и CCTV-запись."]
+	if quest.step == 7:
+		quest.advance(7, 1)
+		lines = ["Вы взяли карточку пропуска 00:13.", "На обороте написано: 'Вернись к стойке, пока звонок не повторился'."]
+	dialogue.start_dialogue("Архивная улика", "документ", lines, "")
+
+func _lock_player():
+	player.locked = true
+	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+
+func _unlock_player():
+	if player and not get_tree().paused:
+		player.locked = false
+		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+
+func _toggle_pause():
+	get_tree().paused = not get_tree().paused
+	pause_panel.visible = get_tree().paused
+	player.locked = get_tree().paused
+	if get_tree().paused:
+		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+	else:
+		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+
+func _resume():
+	get_tree().paused = false
+	pause_panel.visible = false
+	_unlock_player()
+
+func _noop():
+	pass
+
+func _quit_to_menu():
+	get_tree().paused = false
+	get_tree().change_scene_to_file("res://scenes/MainMenu.tscn")
+
+func _add_desk(pos):
+	_add_box("Стол", pos + Vector3(0,0.45,0), Vector3(1.5,0.12,0.75), Color(0.23,0.17,0.10), true)
+	_add_box("Монитор", pos + Vector3(0,0.95,-0.25), Vector3(0.65,0.42,0.06), Color(0.02,0.08,0.12), true)
+	_add_box("Клавиатура", pos + Vector3(0,0.55,0.22), Vector3(0.7,0.04,0.18), Color(0.02,0.02,0.025), true)
+	_add_chair(pos + Vector3(0,0,0.85))
+
+func _add_chair(pos):
+	_add_box("Стул сиденье", pos + Vector3(0,0.35,0), Vector3(0.55,0.12,0.55), Color(0.08,0.08,0.09), true)
+	_add_box("Стул спинка", pos + Vector3(0,0.75,0.25), Vector3(0.55,0.7,0.1), Color(0.07,0.07,0.08), true)
+
+func _add_shelf(pos):
+	_add_box("Шкаф архивный", pos + Vector3(0,1,0), Vector3(0.85,2.0,0.45), Color(0.18,0.16,0.12), true)
+
+func _add_counter(pos, name):
+	_add_box(name, pos + Vector3(0,0.55,0), Vector3(2.5,1.1,0.8), Color(0.20,0.18,0.14), true)
+	_add_box(name + " столешница", pos + Vector3(0,1.14,0), Vector3(2.7,0.12,0.9), Color(0.28,0.25,0.18), true)
+
+func _add_box(name, pos, size, color, collision):
+	var mesh_instance = MeshInstance3D.new()
+	mesh_instance.name = name
+	var mesh = BoxMesh.new()
+	mesh.size = size
+	mesh_instance.mesh = mesh
+	var mat = StandardMaterial3D.new()
+	mat.albedo_color = color
+	mesh_instance.material_override = mat
+	mesh_instance.position = pos
+	add_child(mesh_instance)
+	if collision:
+		var body = StaticBody3D.new()
+		body.name = name + " collision"
+		body.position = pos
+		var shape = CollisionShape3D.new()
+		var box = BoxShape3D.new()
+		box.size = size
+		shape.shape = box
+		body.add_child(shape)
+		add_child(body)
+	furniture_count += 1
+	return mesh_instance
+
+func _add_label_3d(text, pos, size):
+	var label = Label3D.new()
+	label.text = text
+	label.font_size = 64
+	label.pixel_size = size / 64.0
+	label.position = pos
+	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	label.modulate = Color(0.9,0.88,0.72)
+	add_child(label)
+
+func _ensure_input_actions():
+	var actions = {
+		"move_forward": KEY_W,
+		"move_back": KEY_S,
+		"move_left": KEY_A,
+		"move_right": KEY_D,
+		"interact": KEY_E,
+		"dialogue_next": KEY_ENTER,
+		"pause": KEY_ESCAPE
+	}
+	for action in actions.keys():
+		if not InputMap.has_action(action):
+			InputMap.add_action(action)
+			var event = InputEventKey.new()
+			event.physical_keycode = actions[action]
+			InputMap.action_add_event(action, event)
